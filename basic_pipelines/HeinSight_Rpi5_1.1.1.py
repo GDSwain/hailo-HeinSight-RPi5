@@ -27,21 +27,23 @@ class HeinSightHailo:
         Initialize HeinSight with or without Hailo models.
         """
         self._running = True
-        self.use_hailo = use_hailo  # New flag to enable/disable Hailo inference
+        self.use_hailo = use_hailo  # Flag to enable/disable Hailo inference
 
         # Create input and output queues if using Hailo
         if self.use_hailo:
+            if not vial_model_path or not contents_model_path:
+                raise ValueError("Hailo is enabled, but no model paths were provided!")
+            
             self.vial_input_queue = queue.Queue()
             self.vial_output_queue = queue.Queue()
             self.contents_input_queue = queue.Queue()
             self.contents_output_queue = queue.Queue()
 
-            # Initialize Hailo models only if paths are provided
-            if vial_model_path and contents_model_path:
-                self.vial_model = HailoAsyncInference(vial_model_path, self.vial_input_queue, self.vial_output_queue, batch_size=1)
-                self.contents_model = HailoAsyncInference(contents_model_path, self.contents_input_queue, self.contents_output_queue, batch_size=1)
+            # Initialize Hailo models
+            self.vial_model = HailoAsyncInference(vial_model_path, self.vial_input_queue, self.vial_output_queue, batch_size=1)
+            self.contents_model = HailoAsyncInference(contents_model_path, self.contents_input_queue, self.contents_output_queue, batch_size=1)
 
-        self.vial_location = None
+        self.vial_location = None  # Now starts as None
         self.vial_size = [80, 200]
         self.color_palette = self._register_colors(["Homo", "Hetero", "Solid", "Residue", "Empty"])
         self.output_dataframe = pd.DataFrame()
@@ -70,15 +72,17 @@ class HeinSightHailo:
         """
         Detect the vial in the video frame using Hailo.
         """
-        if not self.use_hailo:
-            return None  # Skip detection if Hailo is disabled
+        if not self.use_hailo or not hasattr(self, "vial_model"):
+            logger.warning("Skipping vial detection because Hailo is disabled or not initialized.")
+            return None
 
         processed_frame = self.preprocess_for_hailo(frame)
         result = self.vial_model.run(processed_frame)
         bboxes = self.extract_hailo_detections(result)
 
         if len(bboxes) == 0:
-            return None
+            return None  # No vial found
+
         self.vial_location = [int(x) for x in bboxes[0][:4]]
         self.vial_size = [
             self.vial_location[2] - self.vial_location[0],
@@ -90,7 +94,7 @@ class HeinSightHailo:
         """
         Detect content inside the vial using Hailo.
         """
-        if not self.use_hailo:
+        if not self.use_hailo or not hasattr(self, "contents_model"):
             return []
 
         processed_frame = self.preprocess_for_hailo(vial_frame)
@@ -146,7 +150,8 @@ class HeinSightHailo:
                         continue
 
                 # Crop and process vial region
-                vial_frame = frame[self.vial_location[1]:self.vial_location[3], self.vial_location[0]:self.vial_location[2]]
+                x1, y1, x2, y2 = self.vial_location
+                vial_frame = frame[y1:y2, x1:x2]
                 frame_image = self.process_vial_frame(vial_frame, update_od=True)
             else:
                 frame_image = frame  # Just display the camera feed
@@ -173,9 +178,13 @@ class HeinSightHailo:
 
 if __name__ == "__main__":
     # Run without Hailo (camera only)
-    heinsight = HeinSightHailo(use_hailo=True)
+    heinsight = HeinSightHailo(use_hailo=False)
     heinsight.run(0)  # Start with USB camera only
 
     # Uncomment this to run with Hailo inference (requires .hef files)
-    heinsight = HeinSightHailo(vial_model_path="home/rogue-42/hailo-rpi5-examples/resources/vessel.hef", contents_model_path="home/rogue-42/hailo-rpi5-examples/resources/vessel.hef", use_hailo=True)
+    heinsight = HeinSightHailo(
+        vial_model_path="/home/rogue-42/hailo-rpi5-examples/resources/vessel.hef",
+        contents_model_path="/home/rogue-42/hailo-rpi5-examples/resources/vessel.hef",
+        use_hailo=True
+    )
     heinsight.run(0)  # Start with USB camera and inference
