@@ -1,0 +1,1 @@
+#Adding  a line of text just to set up Cursor AI Commit Messages
