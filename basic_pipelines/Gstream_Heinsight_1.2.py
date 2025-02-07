@@ -9,6 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional, Tuple, Any
 from pathlib import Path
+import argparse
 
 from hailo_apps_infra.hailo_rpi_common import (
     get_caps_from_pad,
@@ -58,10 +59,20 @@ class HeinSightGStreamerApp(GStreamerDetectionApp):
         try:
             self.config = config or DetectionConfig()
             
-            # Validate HEF path
+            # More stringent HEF validation
             self.hef_path = Path(hef_path)
             if not self.hef_path.exists():
                 raise FileNotFoundError(f"HEF file not found: {hef_path}")
+            if not self.hef_path.is_file():
+                raise ValueError(f"HEF path must be a file, not a directory: {hef_path}")
+            if not str(self.hef_path).endswith('.hef'):
+                raise ValueError(f"File must have .hef extension: {hef_path}")
+            
+            # Validate HEF file size
+            if self.hef_path.stat().st_size < 1000:  # arbitrary minimum size
+                raise ValueError(f"HEF file appears to be invalid (too small): {hef_path}")
+            
+            logger.info(f"Loading HEF file: {self.hef_path}")
             
             # Use the exact same path as the working version
             self.post_process_so = "/home/rogue-42/hailo-rpi5-examples/resources/libyolo_hailortpp_postprocess.so"
@@ -98,27 +109,27 @@ class HeinSightGStreamerApp(GStreamerDetectionApp):
         logger.info("Creating GStreamer pipeline...")
         
         try:
-            # Format pipeline exactly as in working version
+            # Determine input source element
+            if self.input_source.startswith('/dev/'):
+                source_element = f"v4l2src device={self.input_source}"
+            else:
+                source_element = f"filesrc location={self.input_source} ! decodebin"
+            
             pipeline = (
-                f"v4l2src device=/dev/video0 ! "
+                f"{source_element} ! "
                 f"video/x-raw, width=1280, height=720 ! "
                 f"videoconvert ! "
                 f"videoscale ! "
-                f"video/x-raw, width=640, height=640, format=RGB ! "  # Added format=RGB
-                f"hailonet hef-path={self.hef_path} batch-size={self.batch_size} ! "
+                f"video/x-raw, width=640, height=640, format=RGB ! "
+                f"hailonet hef-path={self.hef_path} batch-size={self.batch_size} debug=true ! "
                 f"hailofilter so-path={self.post_process_so} function-name={self.post_function_name} ! "
                 f"hailooverlay ! "
                 f"identity name=identity_callback ! "
-                f"videoconvert ! "  # Added videoconvert
+                f"videoconvert ! "
                 f"fpsdisplaysink name=hailo_display video-sink=autovideosink sync=false text-overlay=true signal-fps-measurements=true"
             )
             
-            # Log the complete pipeline for debugging
             logger.info(f"Pipeline string: {pipeline}")
-            
-            # Enable more detailed GStreamer debugging
-            os.environ['GST_DEBUG'] = '3'
-            
             return pipeline
             
         except Exception as e:
@@ -223,8 +234,24 @@ def app_callback(pad: Gst.Pad, info: Gst.Buffer, user_data: app_callback_class) 
 
 if __name__ == "__main__":
     try:
+        # Set up argument parser
+        parser = argparse.ArgumentParser(description='HeinSight GStreamer Application')
+        parser.add_argument('--hef-path', type=str, required=True,
+                          help='Path to Hailo Edge Format (HEF) model file')
+        parser.add_argument('--labels-json', type=str, required=True,
+                          help='Path to labels JSON file')
+        parser.add_argument('--input', type=str, default='/dev/video0',
+                          help='Input source (video file path or device path)')
+        
+        args = parser.parse_args()
+        
+        # Validate input paths
+        if not Path(args.hef_path).exists():
+            raise FileNotFoundError(f"HEF file not found: {args.hef_path}")
+        if not Path(args.labels_json).exists():
+            raise FileNotFoundError(f"Labels JSON file not found: {args.labels_json}")
+            
         user_data = app_callback_class()
-        hef_path = "/home/rogue-42/hailo-rpi5-examples/resources/"
         
         # Create app with custom configuration
         config = DetectionConfig(
@@ -233,7 +260,16 @@ if __name__ == "__main__":
             DETECTION_COLOR=(0, 255, 0)
         )
         
-        app = HeinSightGStreamerApp(app_callback, user_data, hef_path, config)
+        logger.info(f"Initializing with HEF: {args.hef_path}")
+        logger.info(f"Using labels from: {args.labels_json}")
+        logger.info(f"Input source: {args.input}")
+        
+        app = HeinSightGStreamerApp(
+            app_callback=app_callback,
+            user_data=user_data,
+            hef_path=args.hef_path,
+            config=config
+        )
         app.run()
         
     except Exception as e:

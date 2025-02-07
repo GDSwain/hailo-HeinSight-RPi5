@@ -26,6 +26,7 @@ class HeinSightGStreamerApp(GStreamerDetectionApp):
         # Set the Hailo inference and post-processing
         self.post_process_so = "/home/rogue-42/hailo-rpi5-examples/resources/libyolo_hailortpp_postprocess.so"
         self.post_function_name = "filter_letterbox"
+        print(f"Post-process library path: {self.post_process_so}")
 
         # Call parent class (GStreamerDetectionApp)
         super().__init__(app_callback, user_data)
