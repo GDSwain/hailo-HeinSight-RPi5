@@ -224,7 +224,7 @@ def app_callback(pad: Gst.Pad, info: Gst.Buffer, user_data: app_callback_class) 
 if __name__ == "__main__":
     try:
         user_data = app_callback_class()
-        hef_path = "/home/rogue-42/hailo-rpi5-examples/resources/"
+        hef_path = "/home/rogue-42/hailo-rpi5-examples/resources/chem_content.hef"
         
         # Create app with custom configuration
         config = DetectionConfig(

@@ -34,11 +34,11 @@ class HeinSightGStreamerApp(GStreamerDetectionApp):
 def get_pipeline_string(self):
     """Creates GStreamer pipeline with missing elements fixed"""
     pipeline = f"""
-    v4l2src device=/dev/video0 ! video/x-raw, width=1280, height=720 ! \
-    videoconvert ! videoscale ! video/x-raw, width=640, height=640 ! \
-    hailonet hef-path={self.hef_path} batch-size={self.batch_size} ! \
-    hailofilter so-path={self.post_process_so} function-name={self.post_function_name} ! \
-    hailooverlay ! identity name=identity_callback ! \
+    v4l2src device=/dev/video0 ! video/x-raw, width=1280, height=720 !
+    videoconvert ! videoscale ! video/x-raw, width=640, height=640 !
+    hailonet hef-path={self.hef_path} batch-size={self.batch_size} !
+    hailofilter so-path={self.post_process_so} function-name={self.post_function_name} !
+    hailooverlay ! identity name=identity_callback !
     fpsdisplaysink name=hailo_display video-sink=autovideosink sync=false text-overlay=true signal-fps-measurements=true
     """
     return pipeline
@@ -88,6 +88,6 @@ def app_callback(pad, info, user_data):
 
 if __name__ == "__main__":
     user_data = app_callback_class()
-    hef_path = "/home/rogue-42/hailo-rpi5-examples/resources/vessel_h8l.hef"  # UPDATE WHEN READY
+    hef_path = "/home/rogue-42/hailo-rpi5-examples/resources/chem_content.hef"  # UPDATE WHEN READY
     app = HeinSightGStreamerApp(app_callback, user_data, hef_path)
     app.run()
