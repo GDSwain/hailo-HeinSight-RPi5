@@ -175,7 +175,6 @@ def app_callback(pad: Gst.Pad, info: Gst.Buffer, user_data: app_callback_class) 
 
 if __name__ == "__main__":
     try:
-<<<<<<< HEAD
         # Use the base argument parser
         parser = argparse.ArgumentParser()
         parser.add_argument('--input', type=str, default='/dev/video0',
@@ -196,10 +195,6 @@ if __name__ == "__main__":
                           help='Dump DOT file')
         parser.add_argument('--labels-json', type=str,
                           help='Path to labels JSON file')
-=======
-        user_data = app_callback_class()
-        hef_path = "/home/rogue-42/hailo-rpi5-examples/resources/chem_content.hef"
->>>>>>> df0e2c37a58cf6b726f973343da0ccc0bad9253c
         
         args = parser.parse_args()
         

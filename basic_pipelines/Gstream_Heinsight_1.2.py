@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, Any
 from pathlib import Path
 import argparse
+import inquirer  # We'd need to add this dependency
 
 from hailo_apps_infra.hailo_rpi_common import (
     get_caps_from_pad,
@@ -232,46 +233,86 @@ def app_callback(pad: Gst.Pad, info: Gst.Buffer, user_data: app_callback_class) 
 
     return Gst.PadProbeReturn.OK
 
+def interactive_setup():
+    """Interactive setup function to guide users through configuration"""
+    
+    # Find available HEF files
+    hef_files = list(Path('.').glob('**/*.hef'))
+    if not hef_files:
+        print("❌ No HEF files found in the current directory or subdirectories!")
+        return None
+    
+    # Create interactive questions
+    questions = [
+        inquirer.List('hef_file',
+                     message="Which HEF file would you like to use?",
+                     choices=[str(f) for f in hef_files]),
+        
+        inquirer.List('task_type',
+                     message="What type of processing do you need?",
+                     choices=[
+                         ('Segmentation - for identifying object boundaries', 'segmentation'),
+                         ('Pose Estimation - for tracking body positions', 'pose'),
+                         ('Object Detection - for identifying objects', 'detection')
+                     ]),
+        
+        inquirer.List('input_source',
+                     message="Select your input source:",
+                     choices=[
+                         ('Webcam (default)', '/dev/video0'),
+                         ('Other video device', 'custom_device'),
+                         ('Video file', 'file')
+                     ])
+    ]
+    
+    answers = inquirer.prompt(questions)
+    
+    # Handle custom input source if selected
+    if answers['input_source'] == 'custom_device':
+        device_q = [
+            inquirer.Text('device_path',
+                         message="Enter the device path (e.g., /dev/video1)")
+        ]
+        device_answer = inquirer.prompt(device_q)
+        answers['input_source'] = device_answer['device_path']
+    elif answers['input_source'] == 'file':
+        file_q = [
+            inquirer.Text('file_path',
+                         message="Enter the path to your video file")
+        ]
+        file_answer = inquirer.prompt(file_q)
+        answers['input_source'] = file_answer['file_path']
+    
+    return answers
+
 if __name__ == "__main__":
     try:
-        # Set up argument parser
-        parser = argparse.ArgumentParser(description='HeinSight GStreamer Application')
-        parser.add_argument('--hef-path', type=str, required=True,
-                          help='Path to Hailo Edge Format (HEF) model file')
-        parser.add_argument('--labels-json', type=str, required=True,
-                          help='Path to labels JSON file')
-        parser.add_argument('--input', type=str, default='/dev/video0',
-                          help='Input source (video file path or device path)')
+        print("Welcome to HeinSight Pipeline Setup! 🚀")
+        print("Let's configure your processing pipeline...\n")
         
-        args = parser.parse_args()
-        
-        # Validate input paths
-        if not Path(args.hef_path).exists():
-            raise FileNotFoundError(f"HEF file not found: {args.hef_path}")
-        if not Path(args.labels_json).exists():
-            raise FileNotFoundError(f"Labels JSON file not found: {args.labels_json}")
+        # Get configuration through interactive prompts
+        config = interactive_setup()
+        if not config:
+            exit(1)
             
+        print("\n✨ Starting pipeline with following configuration:")
+        print(f"🔹 HEF File: {config['hef_file']}")
+        print(f"🔹 Task Type: {config['task_type']}")
+        print(f"🔹 Input Source: {config['input_source']}")
+        
+        # Create user data and app as before
         user_data = app_callback_class()
-        
-        # Create app with custom configuration
-        config = DetectionConfig(
-            NMS_SCORE_THRESHOLD=0.3,
-            NMS_IOU_THRESHOLD=0.45,
-            DETECTION_COLOR=(0, 255, 0)
-        )
-        
-        logger.info(f"Initializing with HEF: {args.hef_path}")
-        logger.info(f"Using labels from: {args.labels_json}")
-        logger.info(f"Input source: {args.input}")
-        
-        app = HeinSightGStreamerApp(
+        app = HeinSightGStreamerApp.create_app(
+            hef_path=config['hef_file'],
             app_callback=app_callback,
-            user_data=user_data,
-            hef_path=args.hef_path,
-            config=config
+            user_data=user_data
         )
+        
+        print("\n🎥 Starting processing... Press Ctrl+C to stop.")
         app.run()
         
+    except KeyboardInterrupt:
+        print("\n\n👋 Shutting down gracefully...")
     except Exception as e:
-        logger.error(f"Application error: {e}")
+        print(f"\n❌ Error: {e}")
         raise
