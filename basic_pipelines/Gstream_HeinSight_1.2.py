@@ -9,8 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional, Tuple, Any
 from pathlib import Path
-import argparse
-import inquirer  # We'd need to add this dependency
+import inquirer
 
 from hailo_apps_infra.hailo_rpi_common import (
     get_caps_from_pad,
@@ -18,6 +17,8 @@ from hailo_apps_infra.hailo_rpi_common import (
     app_callback_class,
 )
 from hailo_apps_infra.detection_pipeline import GStreamerDetectionApp
+from hailo_apps_infra.instance_segmentation_pipeline import GStreamerInstanceSegmentationApp
+from hailo_apps_infra.pose_estimation_pipeline import GStreamerPoseEstimationApp
 
 # Configure logging
 logging.basicConfig(
@@ -36,106 +37,30 @@ class DetectionConfig:
     FONT_THICKNESS: int = 2
     BOX_THICKNESS: int = 2
 
-class HeinSightGStreamerApp(GStreamerDetectionApp):
-    # Class-level constants
-    DEFAULT_BATCH_SIZE = 1
-    DEFAULT_ARCH = "hailo8l"
-    
-    def __init__(
-        self, 
-        app_callback: callable, 
-        user_data: Any, 
-        hef_path: str,
-        config: Optional[DetectionConfig] = None
-    ):
-        """
-        Initialize the HeinSight GStreamer Application.
+class HeinSightSegmentationApp(GStreamerInstanceSegmentationApp):
+    def __init__(self, app_callback, user_data, input_source, hef_path):
+        self.input_source = input_source
+        self.hef_path = hef_path
+        super().__init__(app_callback, user_data)
         
-        Args:
-            app_callback: Callback function for processing frames
-            user_data: User data to be passed to callback
-            hef_path: Path to Hailo model file
-            config: Detection configuration parameters
-        """
-        try:
-            self.config = config or DetectionConfig()
-            
-            # More stringent HEF validation
-            self.hef_path = Path(hef_path)
-            if not self.hef_path.exists():
-                raise FileNotFoundError(f"HEF file not found: {hef_path}")
-            if not self.hef_path.is_file():
-                raise ValueError(f"HEF path must be a file, not a directory: {hef_path}")
-            if not str(self.hef_path).endswith('.hef'):
-                raise ValueError(f"File must have .hef extension: {hef_path}")
-            
-            # Validate HEF file size
-            if self.hef_path.stat().st_size < 1000:  # arbitrary minimum size
-                raise ValueError(f"HEF file appears to be invalid (too small): {hef_path}")
-            
-            logger.info(f"Loading HEF file: {self.hef_path}")
-            
-            # Use the exact same path as the working version
-            self.post_process_so = "/home/rogue-42/hailo-rpi5-examples/resources/libyolo_hailortpp_postprocess.so"
-            
-            # Log the path for debugging
-            logger.info(f"Using post-process library at: {self.post_process_so}")
-            
-            # Check if video device exists
-            if not Path("/dev/video0").exists():
-                raise FileNotFoundError("Video device /dev/video0 not found")
-            
-            # Initialize parameters
-            self.batch_size = self.DEFAULT_BATCH_SIZE
-            self.arch = self.DEFAULT_ARCH
-            self.post_function_name = "filter_letterbox"
-
-            # Initialize GStreamer if not already initialized
-            if not Gst.is_initialized():
-                Gst.init(None)
-
-            super().__init__(app_callback, user_data)
-            
-        except Exception as e:
-            logger.error(f"Initialization error: {e}")
-            raise
-
-    def get_pipeline_string(self) -> str:
-        """
-        Creates GStreamer pipeline with configured elements.
+    def create_pipeline(self):
+        """Start with a basic pipeline using MJPG format"""
+        pipeline_str = (
+            f'v4l2src device={self.input_source} ! '
+            'image/jpeg,width=640,height=480,framerate=30/1 ! '
+            'jpegdec ! '
+            'videoconvert ! '
+            'video/x-raw,format=RGB ! '
+            'videoconvert ! '
+            'ximagesink sync=false'  # Using ximagesink instead of autovideosink
+        )
         
-        Returns:
-            str: GStreamer pipeline configuration string
-        """
-        logger.info("Creating GStreamer pipeline...")
-        
-        try:
-            # Determine input source element
-            if self.input_source.startswith('/dev/'):
-                source_element = f"v4l2src device={self.input_source}"
-            else:
-                source_element = f"filesrc location={self.input_source} ! decodebin"
-            
-            pipeline = (
-                f"{source_element} ! "
-                f"video/x-raw, width=1280, height=720 ! "
-                f"videoconvert ! "
-                f"videoscale ! "
-                f"video/x-raw, width=640, height=640, format=RGB ! "
-                f"hailonet hef-path={self.hef_path} batch-size={self.batch_size} debug=true ! "
-                f"hailofilter so-path={self.post_process_so} function-name={self.post_function_name} ! "
-                f"hailooverlay ! "
-                f"identity name=identity_callback ! "
-                f"videoconvert ! "
-                f"fpsdisplaysink name=hailo_display video-sink=autovideosink sync=false text-overlay=true signal-fps-measurements=true"
-            )
-            
-            logger.info(f"Pipeline string: {pipeline}")
-            return pipeline
-            
-        except Exception as e:
-            logger.error(f"Error creating pipeline string: {e}")
-            raise
+        print(f"Creating pipeline with: {pipeline_str}")
+        return Gst.parse_launch(pipeline_str)
+
+    def _get_source_str(self):
+        """Override the source string to use v4l2src"""
+        return f'v4l2src device={self.input_source} ! image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! videoconvert'
 
 def draw_detection(
     frame: np.ndarray,
@@ -144,94 +69,16 @@ def draw_detection(
     height: int,
     config: DetectionConfig
 ) -> None:
-    """
-    Draw detection boxes and labels on the frame.
-    
-    Args:
-        frame: Input frame to draw on
-        detection: Hailo detection object
-        width: Frame width
-        height: Frame height
-        config: Detection configuration parameters
-    """
-    bbox = detection.get_bbox()
-    x1, y1 = int(bbox.xmin() * width), int(bbox.ymin() * height)
-    x2, y2 = int(bbox.xmax() * width), int(bbox.ymax() * height)
-    
-    # Draw bounding box
-    cv2.rectangle(
-        frame, 
-        (x1, y1), 
-        (x2, y2), 
-        config.DETECTION_COLOR, 
-        config.BOX_THICKNESS
-    )
-    
-    # Draw label
-    label_text = f"{detection.get_label()} {detection.get_confidence():.2f}"
-    cv2.putText(
-        frame,
-        label_text,
-        (x1, y1 - 5),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        config.FONT_SCALE,
-        config.DETECTION_COLOR,
-        config.FONT_THICKNESS
-    )
-
-def app_callback(pad: Gst.Pad, info: Gst.Buffer, user_data: app_callback_class) -> Gst.PadProbeReturn:
-    """
-    Process inference results from the GStreamer pipeline.
-    
-    Args:
-        pad: GStreamer pad
-        info: Buffer containing frame data
-        user_data: User data object containing frame information
-        
-    Returns:
-        GStreamer pad probe return value
-    """
-    buffer = info.get_buffer()
-    if buffer is None:
-        return Gst.PadProbeReturn.OK
-
-    # Update frame counter
-    user_data.increment()
-    logger.debug(f"Processing frame: {user_data.get_count()}")
-
-    # Get frame metadata
-    format, width, height = get_caps_from_pad(pad)
-    frame = None
-
-    if user_data.use_frame and format:
-        try:
-            frame = get_numpy_from_buffer(buffer, format, width, height)
-        except Exception as e:
-            logger.error(f"Error getting frame from buffer: {e}")
-            return Gst.PadProbeReturn.OK
-
-    # Process detections
-    try:
-        detections = hailo.get_roi_from_buffer(buffer).get_objects_typed(hailo.HAILO_DETECTION)
-        
-        for detection in detections:
-            label = detection.get_label()
-            confidence = detection.get_confidence()
-            
-            if label == "vial":
-                logger.info(f"Vial detected: Confidence {confidence:.2f}")
-
-            if user_data.use_frame and frame is not None:
-                draw_detection(frame, detection, width, height, DetectionConfig())
-                
-        if user_data.use_frame and frame is not None:
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            user_data.set_frame(frame)
-            
-    except Exception as e:
-        logger.error(f"Error processing detections: {e}")
-
-    return Gst.PadProbeReturn.OK
+    """Draw detection, pose, or segmentation based on task type"""
+    # Add segmentation mask drawing
+    mask = detection.get_mask()
+    if mask is not None:
+        # Resize mask to match frame size
+        mask = cv2.resize(mask, (width, height))
+        # Apply color overlay
+        colored_mask = np.zeros_like(frame)
+        colored_mask[mask > 0] = config.DETECTION_COLOR
+        frame = cv2.addWeighted(frame, 1, colored_mask, 0.5, 0)
 
 def interactive_setup():
     """Interactive setup function to guide users through configuration"""
@@ -285,6 +132,44 @@ def interactive_setup():
     
     return answers
 
+def app_callback(pad: Gst.Pad, info: Gst.Buffer, user_data: app_callback_class) -> Gst.PadProbeReturn:
+    """Process inference results from the GStreamer pipeline."""
+    buffer = info.get_buffer()
+    if buffer is None:
+        return Gst.PadProbeReturn.OK
+
+    # Update frame counter
+    user_data.increment()
+    logger.debug(f"Processing frame: {user_data.get_count()}")
+
+    # Get frame metadata
+    format, width, height = get_caps_from_pad(pad)
+    frame = None
+
+    if user_data.use_frame and format:
+        try:
+            frame = get_numpy_from_buffer(buffer, format, width, height)
+        except Exception as e:
+            logger.error(f"Error getting frame from buffer: {e}")
+            return Gst.PadProbeReturn.OK
+
+    # Process detections
+    try:
+        detections = hailo.get_roi_from_buffer(buffer).get_objects()
+        
+        for detection in detections:
+            if user_data.use_frame and frame is not None:
+                draw_detection(frame, detection, width, height, DetectionConfig())
+                
+        if user_data.use_frame and frame is not None:
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            user_data.set_frame(frame)
+            
+    except Exception as e:
+        logger.error(f"Error processing detections: {e}")
+
+    return Gst.PadProbeReturn.OK
+
 if __name__ == "__main__":
     try:
         print("Welcome to HeinSight Pipeline Setup! 🚀")
@@ -300,13 +185,31 @@ if __name__ == "__main__":
         print(f"🔹 Task Type: {config['task_type']}")
         print(f"🔹 Input Source: {config['input_source']}")
         
-        # Create user data and app as before
+        # Create user data
         user_data = app_callback_class()
-        app = HeinSightGStreamerApp.create_app(
-            hef_path=config['hef_file'],
-            app_callback=app_callback,
-            user_data=user_data
-        )
+        
+        # Debug logging
+        print("\n🔍 Debug Information:")
+        print(f"Input Source Type: {type(config['input_source'])}")
+        print(f"Input Source Value: {config['input_source']}")
+        
+        # Create app based on task type
+        if config['task_type'] == 'segmentation':
+            app = HeinSightSegmentationApp(
+                app_callback, 
+                user_data,
+                config['input_source'],
+                config['hef_file']
+            )
+            print(f"App Input Source: {app.input_source}")
+        elif config['task_type'] == 'pose':
+            app = GStreamerPoseEstimationApp(app_callback, user_data)
+            app.input_source = config['input_source']
+            app.hef_path = config['hef_file']
+        else:  # detection
+            app = GStreamerDetectionApp(app_callback, user_data)
+            app.input_source = config['input_source']
+            app.hef_path = config['hef_file']
         
         print("\n🎥 Starting processing... Press Ctrl+C to stop.")
         app.run()
